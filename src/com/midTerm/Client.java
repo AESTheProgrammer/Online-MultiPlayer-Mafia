@@ -2,16 +2,24 @@ package com.midTerm;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.Scanner;
 
 public class Client {
 
-    private Scanner scanner = new Scanner(System.in);
+    private final Scanner scanner = new Scanner(System.in);
     private BufferedReader reader;
     private OutputStream out;
+    private ObjectInputStream objectInputStream;
+    private ArrayList<String> nameOfPlayers;
     private String savedChat = "";
     private String username = "";
+    private Player player;
     private boolean isLogin;
+
+    public Client() {
+
+    }
 
     public static void main(String[] args) {
         Client client = new Client();
@@ -21,13 +29,31 @@ public class Client {
             InputStream in = connectionSocket.getInputStream();
             client.out = connectionSocket.getOutputStream();
             client.reader = new BufferedReader(new InputStreamReader(in));
+            client.objectInputStream = new ObjectInputStream(in);
 
             client.startMessageListener();
             client.startMessageSender();
+            client.startObjectListener();
 
         } catch (IOException | InterruptedException e) {
             System.err.println(e);
             System.out.println("invalid IP Address or Port number");
+        }
+    }
+
+    private void startObjectListener() {
+        Object object;
+        while (player == null && nameOfPlayers == null) {
+            try {
+                if ((object = objectInputStream.readObject()) instanceof Player)
+                    player = (Player)object;
+                else if ((object = objectInputStream.readObject()) instanceof ArrayList<?>) // TODO change the code so that it works with stream
+                    if ((((ArrayList<?>) object).get(0)) instanceof String)
+                        nameOfPlayers = (ArrayList<String>) object;
+            } catch (IOException | ClassNotFoundException e) {
+                System.err.println(e);
+                e.printStackTrace();
+            }
         }
     }
 
@@ -98,5 +124,9 @@ public class Client {
 
     public void setUsername(String username) {
         this.username = username;
+    }
+
+    public GameCharacter getCharacter() {
+        return player.getCharacter();
     }
 }

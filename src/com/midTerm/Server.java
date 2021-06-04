@@ -3,6 +3,7 @@ package com.midTerm;
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Scanner;
 import java.util.concurrent.ExecutorService;
@@ -13,6 +14,9 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Server {
     private final ArrayList<Client> clients = new ArrayList<>(1);
     private final ArrayList<ClientHandler> clientHandlers = new ArrayList<>(1);
+    private ArrayList<ClientHandler> sortedClientHandlerList;
+    private final Game game;
+    private final SecureRandom generator = new SecureRandom();
     private final Lock lock = new ReentrantLock();
     private final ExecutorService executor = Executors.newCachedThreadPool();
     private int port;
@@ -20,6 +24,7 @@ public class Server {
 
     public Server(int port) {
         this.port = port;
+        game = new Game();
     }
 
     public static void main(String[] args) {
@@ -29,15 +34,39 @@ public class Server {
             for (int i = 0; i < 10; i++) {
                 Socket connectionSocket = welcomingSocket.accept();
                 Client client = new Client();
-                ClientHandler clientHandler = new ClientHandler(client, connectionSocket, server);
+                ClientHandler clientHandler = new ClientHandler(client, connectionSocket, server, server.game);
+
                 server.clients.add(client);
                 server.clientHandlers.add(clientHandler);
                 server.executor.execute(clientHandler);
             }
+            server.handoutCharacters();
+            server.game.next();
+
         } catch (IOException e) {
+            System.err.println(e);
             e.printStackTrace();
         }
+    }
 
+    private void handoutCharacters() {
+        var cloneListOfHandlers = clientHandlers;
+        for (int i = 0; i < clientHandlers.size(); i++) {
+            var clientHandler = cloneListOfHandlers.get(generator.nextInt(clientHandlers.size()));
+            clientHandler.sendObjectToClient(game.getCharacterInstance());
+            clientHandler.sendObjectToClient(clientHandlers);
+            cloneListOfHandlers.remove(clientHandler);
+        }
+    }
+
+    private void updateAllClients() {
+        for (var handler : clientHandlers) {
+            handler.sendObjectToClient(clientHandlers);
+        }
+    }
+
+    private Game getGame() {
+        return game;
     }
 
     private void updateChatroom(String newMessage) {
@@ -61,21 +90,27 @@ public class Server {
 
     //----------------------------------------
     // this class handles the client
-    private static class ClientHandler implements Runnable{
+    protected static class ClientHandler implements Runnable{
+
         private final Scanner scanner = new Scanner(System.in);
         private final Client client;
+        private boolean isAwake;
         private final Socket connectionSocket;
         private final Server server;
         private InputStream  inputStream;
         private OutputStream outputStream;
+        private ObjectOutputStream objectOutputStream;
         private BufferedReader reader;
+        private final Game game;
         private String savedChat = "";
         private static boolean isClientConnected;
 
         public ClientHandler(Client client,
                              Socket connectionSocket,
-                             Server server) {
+                             Server server,
+                             Game game) {
             this.server = server;
+            this.game = game;
             this.client = client;
             this.connectionSocket = connectionSocket;
         }
@@ -85,6 +120,7 @@ public class Server {
             try {
                 inputStream = connectionSocket.getInputStream();
                 outputStream = connectionSocket.getOutputStream();
+                objectOutputStream = new ObjectOutputStream(objectOutputStream);
                 reader = new BufferedReader(new InputStreamReader(inputStream));
                 reportClientConnection();
                 startMessageListener();
@@ -125,7 +161,7 @@ public class Server {
                     } else if (line.substring(line.indexOf(":") + 1).trim().strip().equalsIgnoreCase("exit") && client.getUsername().length() !=0){
                         server.updateChatroom(line.substring(0, line.indexOf(":")) + " has been disconnected.");
                         reportClientDisconnection();
-                    } else {
+                    } else if (isAwake) {
                         savedChat += line;
                         server.updateChatroom(line);
                     }
@@ -148,45 +184,24 @@ public class Server {
         public Client getClient() {
             return client;
         }
-    }
 
-    //----------------------------------------
-    // this class holds game related status and method
-    private static class Game {
-
-        // players is the list of all players which game started with
-        // deadPlayers is the list of dead players
-        // deadPlayers is the list of dead players
-        // isDay check if its night or day
-        // result is the final result of the game
-        private static ArrayList<Player> players;
-        private static ArrayList<Player> deadPlayers;
-        private static ArrayList<Player> alivePlayers;
-        private static boolean isDay;
-        private final String result = null;
-
-        /**
-         * this is a constructor
-         * @param player is the player which will be removed
-         */
-        public void removePlayer(Player player) {
-
+        public void sendObjectToClient(Object object) {
+            try {
+                objectOutputStream.writeObject(object);
+            } catch (IOException e) {
+                System.err.println(e);
+                e.printStackTrace();
+            }
         }
 
-        /**
-         * this method add a player to the list of players
-         * @param player the new player which is going to be added
-         */
-        public void addPlayer(Player player) {
-            players.add(player);
+        public void awake() {
+            isAwake = true;
+            writeMessage(Game.getProperMessage("It's DayTime And EveryOne Are Awake."));
         }
 
-        /**
-         * this methods checks if a game is finished
-         */
-        public void isGameFinished() {
-
+        public void asleep() {
+            isAwake = false;
+            writeMessage(Game.getProperMessage("It's Night and EveryOne Are Asleep."));
         }
-
     }
 }
