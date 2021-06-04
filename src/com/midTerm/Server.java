@@ -1,96 +1,159 @@
 package com.midTerm;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Scanner;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class Server {
-    // executor is a service for executing
-    // count is the number of players
-    // game is the system which holds some functionalities and status
-    static ExecutorService executor = Executors.newCachedThreadPool();
-    static ArrayList<ClientHandler> clientHandlers = new ArrayList<>();
-    static int count;
-    static Game game;
+    private final ArrayList<Client> clients = new ArrayList<>(1);
+    private final ArrayList<ClientHandler> clientHandlers = new ArrayList<>(1);
+    private final Lock lock = new ReentrantLock();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private int port;
+    private String savedChat = "";
+
+    public Server(int port) {
+        this.port = port;
+    }
+
     public static void main(String[] args) {
-        try (ServerSocket welcomingSocket = new ServerSocket(7660)) {
-            System.out.println("Server Started.\nWaiting For Players to Join the Game");
-            while (count < 10) {
-                try {
-                    Socket connectionSocket = welcomingSocket.accept();
-                    var clientHandler = new ClientHandler(connectionSocket);
-                    clientHandlers.add(clientHandler);
-                    count++;
-                    var thread = new Thread(clientHandler);
-                    executor.execute(thread);
-                    System.out.printf("Client %d Accepted.%n%d more left.%n", count, 10 - count);
-                } catch (IOException e1) {
-                    e1.printStackTrace();
-                    System.out.println("Accepting Client Failed.");
-                }
+        Server server = new Server(7660);
+        try (ServerSocket welcomingSocket = new ServerSocket(server.port)) {
+            System.out.println("Server Started");
+            for (int i = 0; i < 10; i++) {
+                Socket connectionSocket = welcomingSocket.accept();
+                Client client = new Client();
+                ClientHandler clientHandler = new ClientHandler(client, connectionSocket, server);
+                server.clients.add(client);
+                server.clientHandlers.add(clientHandler);
+                server.executor.execute(clientHandler);
             }
         } catch (IOException e) {
             e.printStackTrace();
-            System.out.println("Building Server Failed.");
         }
 
     }
 
-    // this class handle the clients socket
-    private static class ClientHandler implements Runnable {
-        Socket connectionSocket;
+    private void updateChatroom(String newMessage) {
+        try {
+            lock.lock();
+            savedChat += newMessage + "\n";
+        } finally {
+            lock.unlock();
+        }
+        notifyAllClients(newMessage + "\n");
+    }
 
-        /**
-         * this is a constructor
-         * @param connectionSocket is socket used for making a connection between client and server
-         */
-        public ClientHandler(Socket connectionSocket) {
+    private void notifyAllClients(String newMessage) {
+        for (var handler: clientHandlers)
+            handler.writeMessage(newMessage);
+    }
+
+    private String getSavedChat() {
+        return savedChat;
+    }
+
+    //----------------------------------------
+    // this class handles the client
+    private static class ClientHandler implements Runnable{
+        private final Scanner scanner = new Scanner(System.in);
+        private final Client client;
+        private final Socket connectionSocket;
+        private final Server server;
+        private InputStream  inputStream;
+        private OutputStream outputStream;
+        private BufferedReader reader;
+        private String savedChat = "";
+        private static boolean isClientConnected;
+
+        public ClientHandler(Client client,
+                             Socket connectionSocket,
+                             Server server) {
+            this.server = server;
+            this.client = client;
             this.connectionSocket = connectionSocket;
         }
 
-        /**
-         * this method run the clients socket
-         */
         @Override
         public void run() {
             try {
-                eavesdrop();
-                respondOrSendFeedback();
+                inputStream = connectionSocket.getInputStream();
+                outputStream = connectionSocket.getOutputStream();
+                reader = new BufferedReader(new InputStreamReader(inputStream));
+                reportClientConnection();
+                startMessageListener();
+            } catch (IOException | InterruptedException e) {
+                e.printStackTrace();
+            } finally {
+                try {
+                    inputStream.close();
+                    outputStream.close();
+                    reader.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        private void startMessageListener() throws InterruptedException {
+            Thread listener = new Thread(this::readMessage);
+            listener.start();
+            listener.join();
+        }
+
+        private void writeMessage(String properMessage) {
+            try {
+                outputStream.write(properMessage.getBytes());
+            } catch(IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        private void readMessage() {
+            String line;
+            try {
+                while ((line = reader.readLine()) != null) {
+                    if (client.getUsername().length() == 0) {
+                        server.updateChatroom(line.trim().strip() + " has been connected.");
+                        client.setUsername(line.trim().strip());
+                    } else if (line.substring(line.indexOf(":") + 1).trim().strip().equalsIgnoreCase("exit") && client.getUsername().length() !=0){
+                        server.updateChatroom(line.substring(0, line.indexOf(":")) + " has been disconnected.");
+                        reportClientDisconnection();
+                    } else {
+                        savedChat += line;
+                        server.updateChatroom(line);
+                    }
+                }
             } catch (IOException e) {
                 e.printStackTrace();
-                System.out.println("");
             }
         }
 
-        /**
-         * watch for clients responds and messages
-         */
-        public void eavesdrop() throws IOException {
-            InputStream inputStream = connectionSocket.getInputStream();
-            //TODO checkout the line of code below
-            BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream));
-            String lineOfInputText;
-            while ((lineOfInputText = reader.readLine()) != null) {
-
-            }
-
+        private void reportClientDisconnection() {
+            isClientConnected = false;
+            System.out.println("Client Disconnected");
         }
 
-        /**
-         * send a respond or feedback to a client
-         */
-        public void respondOrSendFeedback() {
+        private void reportClientConnection() {
+            isClientConnected = true;
+            System.out.println("Client Connected");
+        }
 
+        public Client getClient() {
+            return client;
         }
     }
 
+    //----------------------------------------
+    // this class holds game related status and method
     private static class Game {
+
         // players is the list of all players which game started with
         // deadPlayers is the list of dead players
         // deadPlayers is the list of dead players

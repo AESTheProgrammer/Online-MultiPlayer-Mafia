@@ -36,7 +36,7 @@ public class Player implements Observer {
 
     @Override
     public void update(ArrayList<Player> removedPlayer) {
-        for ()
+
     }
 
     private enum Character {
@@ -52,7 +52,6 @@ public class Player implements Observer {
         PROFESSIONAL,
         DETECTOR;
 
-        private
         Character() {
         }
 
