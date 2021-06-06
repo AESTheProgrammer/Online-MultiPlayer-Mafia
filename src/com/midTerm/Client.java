@@ -87,7 +87,7 @@ public class Client {
             while (!inputString.trim().strip().equalsIgnoreCase("exit")) {
                 inputString = scanner.nextLine();
                 if (inputString.trim().strip().length() > 0)
-                    out.write((username + ": " + inputString + "\n").getBytes());
+                    out.write((inputString + "\n").getBytes());
             }
         } catch(IOException e) {
             e.printStackTrace();
