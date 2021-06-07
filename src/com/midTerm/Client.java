@@ -2,7 +2,6 @@ package com.midTerm;
 
 import java.io.*;
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.Scanner;
 
 public class Client {
@@ -10,12 +9,11 @@ public class Client {
     private final Scanner scanner = new Scanner(System.in);
     private BufferedReader reader;
     private OutputStream out;
-    private ObjectInputStream objectInputStream;
-    private ArrayList<String> nameOfPlayers;
+//    private ObjectInputStream objectInputStream;
     private String savedChat = "";
     private String username = "";
-    private Player player;
     private boolean isLogin;
+    public GameCharacter character;
 
     public Client() {
 
@@ -25,49 +23,34 @@ public class Client {
         Client client = new Client();
         try (Socket connectionSocket = new Socket("127.0.0.1", 7660)){
             client.login();
-
             InputStream in = connectionSocket.getInputStream();
             client.out = connectionSocket.getOutputStream();
             client.reader = new BufferedReader(new InputStreamReader(in));
-            client.objectInputStream = new ObjectInputStream(in);
+//            client.objectInputStream = new ObjectInputStream(in);
 
+//            client.startObjectListener();
             client.startMessageListener();
             client.startMessageSender();
-            client.startObjectListener();
-
         } catch (IOException | InterruptedException e) {
             System.err.println(e);
-            System.out.println("invalid IP Address or Port number");
+            e.printStackTrace();
         }
     }
 
-    private void startObjectListener() {
-        Object object;
-        while (player == null && nameOfPlayers == null) {
-            try {
-                if ((object = objectInputStream.readObject()) instanceof Player)
-                    player = (Player)object;
-                else if ((object = objectInputStream.readObject()) instanceof ArrayList<?>) // TODO change the code so that it works with stream
-                    if ((((ArrayList<?>) object).get(0)) instanceof String)
-                        nameOfPlayers = (ArrayList<String>) object;
-            } catch (IOException | ClassNotFoundException e) {
-                System.err.println(e);
-                e.printStackTrace();
-            }
-        }
-    }
-
-    private void login() {
-        System.out.println("Connected to the Server");
-        System.out.print("Enter Your Username: ");
-        username = scanner.nextLine();
-        isLogin = true;
-    }
-
-    private void logout() {
-        System.out.println("Disconnected from the Server");
-        isLogin = false;
-    }
+//    private void startObjectListener() {
+//        Thread thread = new Thread(() -> {
+//            while (character == null)
+//                readObject();
+//            System.out.println(character);
+//        });
+//        thread.start();
+//    }
+//
+//    private void readObject() {
+//        try {
+//            character = (GameCharacter) objectInputStream.readObject();
+//        } catch (IOException | ClassNotFoundException ignored) {}
+//    }
 
     private void startMessageListener() throws InterruptedException {
         Thread listener = new Thread(this::readMessage);
@@ -78,6 +61,16 @@ public class Client {
         Thread sender = new Thread(this::writeMessage);
         sender.start();
         sender.join();
+    }
+
+    private void login() {
+        System.out.println("Connected to the Server");
+        isLogin = true;
+    }
+
+    private void logout() {
+        System.out.println("Disconnected from the Server");
+        isLogin = false;
     }
 
     private void writeMessage() {
@@ -96,12 +89,21 @@ public class Client {
     }
 
     private void readMessage() {
-        String line = "";
+        String line;
         try {
-            while ((line = reader.readLine()) != null) {
-                cls();
-                savedChat += line + "\n";
-                System.out.println(savedChat);
+            reader.read();
+            reader.read();
+            reader.read();
+            reader.read();
+            while ((line = reader.readLine()) != null && isLogin) {
+                // cls();
+//                System.out.println(savedChat + line);
+                if (line.contains("<character>") && character == null) {
+                    character = GameCharacter.getCharacterByName(line.substring(line.indexOf(">") + 2));
+                } else if (line.length() != 0) {
+                    System.out.println(line);
+                    savedChat += line + "\n";
+                }
                 if (!isLogin)
                     break;
             }
@@ -127,6 +129,10 @@ public class Client {
     }
 
     public GameCharacter getCharacter() {
-        return player.getCharacter();
+        return character;
+    }
+
+    public void setCharacter(GameCharacter randomRole) {
+        this.character = randomRole;
     }
 }

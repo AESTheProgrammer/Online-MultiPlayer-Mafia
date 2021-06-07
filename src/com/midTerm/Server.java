@@ -5,6 +5,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Scanner;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -24,15 +25,17 @@ public class Server {
 
     public Server(int port) {
         this.port = port;
-        game = new Game();
+        game = new Game(this);
     }
 
     public static void main(String[] args) {
         Server server = new Server(7660);
         try (ServerSocket welcomingSocket = new ServerSocket(server.port)) {
             System.out.println("Server Started");
-            for (int i = 0; i < 10; i++) {
+            int count = 0;
+            while ((count < 3 || !server.isAllClientsReady()) && count < 4) {
                 Socket connectionSocket = welcomingSocket.accept();
+                count++;
                 Client client = new Client();
                 ClientHandler clientHandler = new ClientHandler(client, connectionSocket, server, server.game);
 
@@ -41,35 +44,40 @@ public class Server {
                 server.executor.execute(clientHandler);
             }
             server.handoutCharacters();
+            server.game.sortHandlersAndClients(server.clientHandlers);
+            while (!server.isAllClientsReady())
+                Thread.sleep(1000);
             server.game.next();
-
-        } catch (IOException e) {
+        } catch (IOException | InterruptedException e) {
             System.err.println(e);
             e.printStackTrace();
         }
     }
 
+    /**
+     * @return true if all clients are ready
+     */
+    private boolean isAllClientsReady() {
+        return clientHandlers.stream().allMatch(handler -> handler.isReady);
+    }
+
+    /**
+     * this method handout characters to the clients randomly
+     */
     private void handoutCharacters() {
-        var cloneListOfHandlers = clientHandlers;
-        for (int i = 0; i < clientHandlers.size(); i++) {
-            var clientHandler = cloneListOfHandlers.get(generator.nextInt(clientHandlers.size()));
-            clientHandler.sendObjectToClient(game.getCharacterInstance());
-            clientHandler.sendObjectToClient(clientHandlers);
-            cloneListOfHandlers.remove(clientHandler);
-        }
-    }
-
-    private void updateAllClients() {
+        Collections.shuffle(clientHandlers);
         for (var handler : clientHandlers) {
-            handler.sendObjectToClient(clientHandlers);
+            var randomRole = game.getCharacterInstance();
+            handler.getClient().setCharacter(randomRole);
+            handler.writeMessage(Game.getProperMessage("<character> " + randomRole.toString()));
         }
     }
 
-    private Game getGame() {
-        return game;
-    }
-
-    private void updateChatroom(String newMessage) {
+    /**
+     * this method updates the chatroom for all players
+     * @param newMessage is the new message which will be added to the chatroom
+     */
+    public void updateChatroom(String newMessage) {
         try {
             lock.lock();
             savedChat += newMessage + "\n";
@@ -79,11 +87,19 @@ public class Server {
         notifyAllClients(newMessage + "\n");
     }
 
+    /**
+     * this method notify all clients with a new message
+     * @param newMessage is the new message which will be sent to clients from the Narrator
+     */
     private void notifyAllClients(String newMessage) {
         for (var handler: clientHandlers)
             handler.writeMessage(newMessage);
     }
 
+    /**
+     * this is a getter
+     * @return the saved chat
+     */
     private String getSavedChat() {
         return savedChat;
     }
@@ -103,23 +119,24 @@ public class Server {
     // this class handles the client
     protected static class ClientHandler implements Runnable{
 
-        private final Scanner scanner = new Scanner(System.in);
-        private final Client client;
-        private boolean isDay;
-        private boolean isAwake;
-        private final Socket connectionSocket;
+        private final Game game;
         private final Server server;
+        private final Client client;
+        private final Socket connectionSocket;
         private InputStream  inputStream;
         private OutputStream outputStream;
         private ObjectOutputStream objectOutputStream;
         private BufferedReader reader;
+        private boolean isReady;
+        private boolean isAwake;
         private boolean isConfirmation;
         private boolean isVoting;
+        private boolean isAlive;
+        private boolean isClientConnected;
         private byte warnings;
-        private final Game game;
         private String savedChat = "";
-        private static boolean isClientConnected;
         private String voted;
+        private final Scanner scanner = new Scanner(System.in);
 
         /**
          * this is a constructor
@@ -136,8 +153,12 @@ public class Server {
             this.game = game;
             this.client = client;
             this.connectionSocket = connectionSocket;
-            this.isVoting = false;
-            this.isConfirmation = false;
+            voted = "";
+            isReady = false;
+            isVoting = false;
+            isConfirmation = false;
+            isAwake = true;
+            isAlive = true;
         }
 
         /**
@@ -148,21 +169,13 @@ public class Server {
             try {
                 inputStream = connectionSocket.getInputStream();
                 outputStream = connectionSocket.getOutputStream();
-                objectOutputStream = new ObjectOutputStream(objectOutputStream);
+                objectOutputStream = new ObjectOutputStream(outputStream);
                 reader = new BufferedReader(new InputStreamReader(inputStream));
-                reportClientConnection();
                 getUsername();
+                reportClientConnection();
                 startMessageListener();
             } catch (IOException | InterruptedException e) {
                 e.printStackTrace();
-            } finally {
-                try {
-                    inputStream.close();
-                    outputStream.close();
-                    reader.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
             }
         }
 
@@ -174,10 +187,10 @@ public class Server {
             var inputUsername = "";
             writeMessage(Game.getProperMessage("Enter Your Username"));
             while ((inputUsername = reader.readLine()) != null)  {
-                if (!server.isValidUsername(inputUsername))
+                if (!inputUsername.equals("") && !server.isValidUsername(inputUsername))
                     writeMessage(Game.getProperMessage(inputUsername + " is already in use by another player."));
-                else {
-                    server.updateChatroom(inputUsername.trim().strip() + " has been connected.");
+                else if (!inputUsername.equals("")){
+                    server.updateChatroom(Game.getProperMessage(inputUsername.trim().strip() + " has been connected."));
                     client.setUsername(inputUsername.trim().strip());
                     return;
                 }
@@ -198,7 +211,7 @@ public class Server {
          * this method writes message to output by awaking it
          * @param properMessage is a message which should satisfies some criterion
          */
-        private void writeMessage(String properMessage) {
+        public void writeMessage(String properMessage) {
             try {
                 outputStream.write(properMessage.getBytes());
             } catch(IOException e) {
@@ -213,40 +226,46 @@ public class Server {
             String line;
             try {
                 while ((line = reader.readLine()) != null) {
-                    if (warnings >= 3) {
+                    if (warnings >= 3 || line.trim().strip().equalsIgnoreCase("exit")) {
                         reportClientDisconnection();
                         server.updateChatroom(client.getUsername() + " has been disconnected.");
                         return;
-                    } else if (!isVoting && !isConfirmation && isAwake) {
-                        if (line.trim().strip().equalsIgnoreCase("exit")) {
-                            server.updateChatroom(client.getUsername() + " has been disconnected.");
-                            reportClientDisconnection();
-                        } else if (isAwake) {
+                    } else if (isAwake && isAlive) {
+                        if (!isVoting && !isConfirmation) {
+                            if (line.trim().strip().equalsIgnoreCase("ready"))
+                                isReady = true;
                             savedChat += client.getUsername() + ": " + line;
-                            server.updateChatroom(line);
-                        }
-                    } else if (isConfirmation && !isVoting && isAwake) {
-                        if (line.equalsIgnoreCase("yes")) {
-                            isConfirmation = false;
-                            server.updateChatroom(Game.getProperMessage("Mayor confirmed the execution."));
-                        } else if (line.equalsIgnoreCase("NO")) {
-                            isConfirmation = false;
-                            server.updateChatroom(Game.getProperMessage("Mayor denied the execution."));
-                        }
-                    } else if (isVoting && !isConfirmation && isAwake) {
-                        for (var client : game.getSortedClientList()) {
-                            if (client.getUsername().equalsIgnoreCase(line.trim().strip())) {
+                            server.updateChatroom(client.getUsername() + ": " + line);
+                        } else if (isConfirmation && !isVoting) {
+                            voted = "";
+                            if (line.equalsIgnoreCase("yes")) {
+                                isConfirmation = false;
+                                server.updateChatroom(Game.getProperMessage("Mayor confirmed the execution."));
+                                voted = "no";
+                            } else if (line.equalsIgnoreCase("NO")) {
+                                isConfirmation = false;
+                                voted = "yes";
+                                server.updateChatroom(Game.getProperMessage("Mayor denied the execution."));
+                            }
+                        } else if (isVoting && !isConfirmation) {
+                            for (var client : game.getSortedClientList()) {
                                 voted = line.trim().strip();
-                                if (!isDay) {
-                                    server.updateChatroom(Game.getProperMessage(client.getUsername() + " voted " + line));
-                                    break;
-                                } else {
-                                    server.notifyAwakeClients(Game.getProperMessage(client.getUsername() + " cured " + line));
-                                    break;
+                                if (client.getUsername().equalsIgnoreCase(voted) &&
+                                   !voted.equalsIgnoreCase(client.getUsername())){
+                                    if (game.isDay()) {
+                                        server.updateChatroom(Game.getProperMessage(
+                                                this.client.getUsername() + " voted " + voted));
+                                        break;
+                                    } else {
+                                        server.notifyAwakeClients(Game.getProperMessage(
+                                                this.client.getUsername() + " cured " + voted));
+                                        break;
+                                    }
                                 }
                             }
+                            if (voted.length() == 0)
+                                writeMessage(Game.getProperMessage("Invalid Username, Please Try Again."));
                         }
-                        writeMessage(Game.getProperMessage("Invalid Username, Please Try Again."));
                     }
                 }
             } catch (IOException e) {
@@ -259,7 +278,9 @@ public class Server {
          */
         private void reportClientDisconnection() {
             isClientConnected = false;
-            System.out.println("Client <" + client.getUsername() + "> Disconnected");
+            isAwake = false;
+            isAlive = false;
+            System.out.println("Player <" + client.getUsername() + "> Disconnected");
         }
 
         /**
@@ -267,7 +288,8 @@ public class Server {
          */
         private void reportClientConnection() {
             isClientConnected = true;
-            System.out.println("Client <" + client.getUsername() + "> Connected");
+            isAlive = true;
+            System.out.println("Player <" + client.getUsername() + "> Connected");
         }
 
         /**
@@ -357,6 +379,40 @@ public class Server {
         public void incrementWarnings(String message) {
             writeMessage(message);
             warnings++;
+        }
+
+        /**
+         * this method kills the client
+         */
+        public void kill() {
+            client.getCharacter().decreaseLive();
+            if (client.getCharacter().getLives() == 0) {
+                isAlive = false;
+                game.updateDeadCharacters(client.getCharacter());
+            }
+        }
+
+        /**
+         * this method cure the player
+         */
+        public void cure() {
+            isAlive = true;
+        }
+
+        /**
+         * this method is a getter
+         * @return true is ready else false
+         */
+        public boolean isReady() {
+            return isReady;
+        }
+
+        /**
+         * this is a getter
+         * @return true if the client is alive otherwise false
+         */
+        public boolean isAlive() {
+            return isAlive;
         }
     }
 }
