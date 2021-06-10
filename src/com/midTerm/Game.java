@@ -1,6 +1,7 @@
 package com.midTerm;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -9,6 +10,7 @@ import static java.lang.Thread.sleep;
 //----------------------------------------
 // this class holds game related status and method
 public class Game {
+    // this is the server which games is running on
     // list of all characters of the game which are sorted
     // players is the list of all players which game started with
     // sortedHandlerList is sorted list of client handlers(it is sorted in awake hierarchy order)
@@ -17,15 +19,16 @@ public class Game {
     // <isIntroduction> indicates if it is introduction day
     // isDay check if its night or day
     // timer is the time left from the section of the game
-    private Stack<GameCharacter> characters;
-    private ArrayList<Player> players;
+    private final Server server;
+    private final Stack<GameCharacter> characters;
+    private final ArrayList<Client> sortedClientList;
+    private final ArrayList<Server.ClientHandler> deadHandlers;
+    private final HashMap<GameCharacter, String> repliesDuringTheNight;
+    private final HashMap<String, Server.ClientHandler> handlersClientUsername;
+    private HashMap<GameCharacter, Server.ClientHandler> handlerByCharacter;
     private ArrayList<Server.ClientHandler> sortedHandlerList;
-    private ArrayList<Client> sortedClientList;
     private ArrayList<GameCharacter> deadCharacters;
-    private ArrayList<String> repliesFromClientsDuringTheNight;
-    private HashMap<String, Server.ClientHandler> handlersClientUsername;
-    private String poleResult = null;
-    private Server server;
+    private String poleResult;
     private boolean isIntroductionDay;
     private boolean isDay;
     private int timer;
@@ -34,12 +37,17 @@ public class Game {
      * this is a constructor
      */
     public Game(Server server) {
-        this.server = server;
         isDay = true;
+        poleResult = "";
+        this.server = server;
+        isIntroductionDay = true;
         characters = new Stack<>();
+        deadHandlers = new ArrayList<>();
+        deadCharacters = new ArrayList<>();
         sortedClientList = new ArrayList<>();
         sortedHandlerList = new ArrayList<>();
-        isIntroductionDay = true;
+        repliesDuringTheNight = new HashMap<>();
+        handlersClientUsername = new HashMap<>();
         setupCharactersStack();
     }
 
@@ -74,81 +82,200 @@ public class Game {
      * this method starts the next stage of the game.
      */
     public void next() {
-        switchDay();
-        startIntroductionNightProgress();
-        switchDay();
-        startDayProgress();
-//        if (isGameFinished()) {
-//            showResultOfTheGame();
-//            return;
-//        } else if (isIntroductionDay) {
-//            switchDay();
-//            startIntroductionNightProgress();
-//        } else if (isDay) {
-//            switchDay();
-//            startNightProgress();
-//        } else {
-//            switchDay();
-//            startDayProgress();
-//        }
-//        next();
+        mapHandlersToCharacters();
+        indicateDeadPlayers();
+        if (isGameFinished()) {
+            return;
+        } else if (isIntroductionDay) {
+            switchDay();
+            startIntroductionNightProgress();
+            isIntroductionDay = false;
+        } else if (isDay && !isGameFinished()) {
+            switchDay();
+            refresh();
+            startNightProgress();
+        } else if (!isGameFinished()){
+            switchDay();
+            refresh();
+            startDayProgress();
+        }
+        next();
+    }
+
+    /**
+     * this method clean old records
+     */
+    private void refresh() {
+        poleResult = "";
+        sortedHandlerList.forEach(Server.ClientHandler::setEmptyVoted);
     }
 
     /**
      * this method starts the night progress
      */
     private void startNightProgress() {
-        for (int i = 0; i < 3; i++)
-            sortedHandlerList.get(i).getVote(Game.getProperMessage("Who To Be Executed?"));
-        startTimer(30);
-        sortedHandlerList.get(0).silent();
-        sortedHandlerList.get(2).silent();
-
-        sortedHandlerList.get(1).getVote(Game.getProperMessage("Who To Be Cured?"));
-        startTimer(20);
-        sortedHandlerList.get(1).silent();
-
-        sortedHandlerList.get(4).getVote(Game.getProperMessage("Who To Be Cured?"));
-        startTimer(20);
-        sortedHandlerList.get(4).silent();
-
-        sortedHandlerList.get(5).getVote(Game.getProperMessage("Who To Be inquired?"));
-        startTimer(20);
-        sortedHandlerList.get(5).silent();
-
-        sortedHandlerList.get(6).getVote(Game.getProperMessage("Who To Be Killed?"));
-        startTimer(20);
-        sortedHandlerList.get(6).silent();
-
-        sortedHandlerList.get(7).getVote(Game.getProperMessage("Who to be muted?"));
-        startTimer(20);
-        sortedHandlerList.get(7).silent();
-
-        sortedHandlerList.get(8).getConfirmation(Game.getProperMessage("Do you want me to reveal dead characters?"));
-        startTimer(20);
-        sortedHandlerList.get(8).silent();
+        mapHandlersToCharacters();
+        awakeMafiasForExecution();
+        awakeDoctorsForTreatment();
+        var handler = handlerByCharacter.get(GameCharacter.DETECTOR);
+        if (handler != null) {
+            handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be inquired?"));
+            sendListOfAllALivePlayers();
+            startTimer(20);
+            showTheResultOfQuery(handler);
+            handler.silent();
+        }
+        handler = handlerByCharacter.get(GameCharacter.PROFESSIONAL);
+        if (handler != null) {
+            handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Killed?"));
+            sendListOfAllALivePlayers();
+            startTimer(20);
+            handler.silent();
+            handler.asleep(getProperMessage("You are now asleep."));
+        }
+        handler = handlerByCharacter.get(GameCharacter.MENTALIST);
+        if (handler != null) {
+            handler.getVote(sortedHandlerList, Game.getProperMessage("Who to be muted?"));
+            sendListOfAllALivePlayers();
+            startTimer(20);
+            handler.asleep(getProperMessage("You are now asleep."));
+            handler.silent();
+        }
+        handler = handlerByCharacter.get(GameCharacter.DIEHARD);
+        if (handler != null &&
+            handler.getClient().getCharacter().getConstraint() != 0) {
+            handler.getConfirmation(Game.getProperMessage("Do you want me to reveal dead characters?(yes/no)"));
+            startTimer(20);
+            handler.asleep(getProperMessage("You are now asleep."));
+            handler.silent();
+        }
+        //TODO die hard can only get dead characters for 2 times
+        collectRepliesSentNight();
+        handleRepliesInNight();
     }
 
     /**
-     * this method gets a string as a reply from the client
-     * @param reply is the reply from the client  during the night in regard of his character
+     * this method shows the result of query to the detective
      */
-    public void addReply(String reply) {
-        repliesFromClientsDuringTheNight.add(reply);
+    private void showTheResultOfQuery(Server.ClientHandler handler) {
+        if (!handler.getVoted().equals("")) {
+            var character = handlersClientUsername.get(handler.getVoted()).getClient().getCharacter();
+            if (character.isCitizen() || character == GameCharacter.GODFATHER) {
+                server.notifyAwakeAndAliveClients(Game.getProperMessage("It's a CITIZEN"));
+            } else {
+                server.notifyAwakeAndAliveClients(Game.getProperMessage("It's a Mafia"));
+            }
+        }
+    }
+
+    /**
+     * this method awakes the doctors so they cure someone
+     */
+    private void awakeDoctorsForTreatment() {
+        ArrayList<Server.ClientHandler> mafiasList = new ArrayList<>();
+        sortedHandlerList.forEach((handler) -> {
+            if (!handler.getClient().getCharacter().isCitizen())
+                mafiasList.add(handler);
+        });
+        var goodDoctor = handlerByCharacter.get(GameCharacter.DOCTOR);
+        var badDoctor = handlerByCharacter.get(GameCharacter.DOCTORLECTOR);
+        if (goodDoctor != null && goodDoctor.isAlive()) {
+            goodDoctor.awake("Wakeup it's time to Cure someone.");
+            goodDoctor.getVote(sortedHandlerList, getProperMessage("Who To Be Cured?"));
+            sendListOfAllALivePlayers();
+            startTimer(20);
+            goodDoctor.asleep(getProperMessage("You are now asleep."));
+            goodDoctor.silent();
+        }
+        if (badDoctor != null && badDoctor.isAlive()) {
+            badDoctor.awake("Wakeup it's time to Cure One Of Your mates.");
+            badDoctor.getVote(mafiasList, getProperMessage("Who To Be Cured?"));
+            sendListOfAllALivePlayers();
+            startTimer(20);
+            badDoctor.asleep(getProperMessage("You are now asleep."));
+            badDoctor.silent();
+        }
+    }
+
+    /**
+     * this method awakes the mafias so they can execute someone
+     */
+    private void awakeMafiasForExecution() {
+        ArrayList<Server.ClientHandler> mafias = new ArrayList<>(Arrays.asList(
+                handlerByCharacter.get(GameCharacter.MAFIA),
+                handlerByCharacter.get(GameCharacter.DOCTORLECTOR),
+                handlerByCharacter.get(GameCharacter.GODFATHER)));
+        for (var handler : mafias) {
+            if (handler != null) {
+                handler.awake(Game.getProperMessage("Wakeup it's time to Execute someone."));
+                handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Executed?"));
+            }
+        }
+        sendListOfAllALivePlayers();
+        startTimer(30);
+        for (var handler : mafias) {
+            if (handler != null) {
+                handler.asleep(Game.getProperMessage("You are now asleep."));
+                handler.silent();
+            }
+        }
     }
 
     /**
      * handle actions of the player's during the night
      */
     public void handleRepliesInNight() {
-        handlersClientUsername.get(repliesFromClientsDuringTheNight.get(0)).kill();
-        handlersClientUsername.get(repliesFromClientsDuringTheNight.get(4)).kill();
-        handlersClientUsername.get(repliesFromClientsDuringTheNight.get(1)).cure();
-        handlersClientUsername.get(repliesFromClientsDuringTheNight.get(2)).cure();
-        handlersClientUsername.get(repliesFromClientsDuringTheNight.get(5)).silent();
-        if (repliesFromClientsDuringTheNight.get(5).equalsIgnoreCase("yes"))
-            revealDeadCharacters();
-        repliesFromClientsDuringTheNight.clear();
+        var username  = repliesDuringTheNight.get(GameCharacter.GODFATHER);
+        if (username.length() != 0)
+            handlersClientUsername.get(repliesDuringTheNight.get(GameCharacter.GODFATHER)).kill();
+
+        username = repliesDuringTheNight.get(GameCharacter.PROFESSIONAL);
+        if (username != null && username.length() != 0) {
+            var targetedHandler = handlersClientUsername.get(repliesDuringTheNight.get(GameCharacter.PROFESSIONAL));
+            if (targetedHandler.getClient().getCharacter().isCitizen())
+                handlerByCharacter.get(GameCharacter.PROFESSIONAL).kill();
+            else
+                targetedHandler.kill();
+        }
+
+        username = repliesDuringTheNight.get(GameCharacter.DOCTOR);
+        if (username != null && username.length() != 0)
+            handlersClientUsername.get(repliesDuringTheNight.get(GameCharacter.DOCTOR)).cure();
+
+        username = repliesDuringTheNight.get(GameCharacter.DOCTORLECTOR);
+        if (username != null && username.length() != 0)
+            handlersClientUsername.get(repliesDuringTheNight.get(GameCharacter.DOCTORLECTOR)).cure();
+
+        username = repliesDuringTheNight.get(GameCharacter.MENTALIST);
+        sortedHandlerList.forEach(Server.ClientHandler::unmute);
+        if (username != null && username.length() != 0)
+            handlersClientUsername.get(repliesDuringTheNight.get(GameCharacter.MENTALIST)).mute();
+    }
+
+    /**
+     * this method update all of collections due to dead players
+     */
+    private void indicateDeadPlayers() {
+        ArrayList<Server.ClientHandler> cloneSortedHandlerList = new ArrayList<>(sortedHandlerList);
+        cloneSortedHandlerList.forEach(handler -> {
+            if (!handler.isAlive()) {
+                handler.getConfirmation(Game.getProperMessage("You are Killed.Do you want to continue the game as spectre?(Yes/No)"));
+                sortedHandlerList.remove(handler);
+                deadHandlers.add(handler);
+                deadCharacters.add(handler.getClient().getCharacter());
+                sortedClientList.remove(handler.getClient());
+                handlerByCharacter.remove(handler.getClient().getCharacter());
+            }
+        });
+    }
+
+    /**
+     * collect all replies from the night
+     */
+    private void collectRepliesSentNight() {
+        for (var handler : sortedHandlerList) {
+            repliesDuringTheNight.put(handler.getClient().getCharacter(), handler.getVoted());
+        }
     }
 
     /**
@@ -192,7 +319,7 @@ public class Game {
     private void makePole() {
         sendListOfAllALivePlayers();
         for (var clientHandler : sortedHandlerList)
-            clientHandler.getVote(Game.getProperMessage("Who To Be Executed?"));
+            clientHandler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Executed?"));
         startTimer(30);
         getPoleResult(countTheVotes());
         announcePoleResult();
@@ -206,36 +333,55 @@ public class Game {
      * this method report the poles result with character and username
      */
     private void announceFinalPoleResult() {
-        for (var handler : sortedHandlerList)
-            if (handler.getClient().getCharacter() == GameCharacter.MAYOR)
-                if (poleResult.equals("") || handler.getVoted().equalsIgnoreCase("no"))
-                    return;
-        Client client = null;
-        for (var clnt : sortedClientList)
-            if (clnt.getUsername().equalsIgnoreCase(poleResult))
-                client = clnt;
+        sortedHandlerList.forEach(Server.ClientHandler::awake);
+        var mayorsHandler = handlerByCharacter.get(GameCharacter.MAYOR);
+        if (mayorsHandler != null) {
+            if (poleResult.equals("") ||
+                mayorsHandler.getVoted().equalsIgnoreCase("no")) {
+                server.updateChatroom(
+                        getProperMessage("Mayor denied the execution."));
+                return;
+            }
+        }
+        server.updateChatroom(getProperMessage("Mayor confirmed the execution."));
+        var targetedHandler = handlersClientUsername.get(poleResult);
+        targetedHandler.kill();
+        targetedHandler.kill();
+        indicateDeadPlayers();
         for (var handler : sortedHandlerList)
             handler.reportPoleResult(getProperMessage(
-                    client.getUsername() + "(" + client.getCharacter() + ") was executed."));
+         targetedHandler.getClient().getUsername() +
+            "(" + targetedHandler.getClient().getCharacter() + ") was executed."));
     }
 
     /**
      * report initial pole result
      */
     private void announcePoleResult() {
-        for (var handler : sortedHandlerList)
-            handler.reportPoleResult(
-                    getProperMessage(poleResult + " was voted."));
+        for (var handler : sortedHandlerList) {
+            if (poleResult.length() == 0) {
+                handler.reportPoleResult(
+                        getProperMessage("no one was voted."));
+            } else {
+                handler.reportPoleResult(
+                        getProperMessage(poleResult + " was voted."));
+            }
+        }
     }
 
     /**
      * this method awake the mayor for confirming the execution of the voted client
      */
     private void callTheMayor() {
-        for (var handler : sortedHandlerList)
-            if (handler.getClient().getCharacter() == GameCharacter.MAYOR)
-                handler.getConfirmation(poleResult);
-        startTimer(30);
+        if (poleResult != null && !poleResult.equals("")) {
+            for (var handler : sortedHandlerList) {
+                if (handler.getClient().getCharacter() == GameCharacter.MAYOR) {
+                    handler.getConfirmation(Game.getProperMessage(poleResult + " was voted do You confirm the execution?(Yes/No)"));
+                    startTimer(10);
+                    break;
+                }
+            }
+        }
     }
 
     /**
@@ -255,12 +401,12 @@ public class Game {
      * this method list of all alive players to every player
      */
     private void sendListOfAllALivePlayers() {
-        var message = "Alive players are as follows:\n";
+        StringBuilder message = new StringBuilder("Alive players are as follows:\n");
         for (var handler : sortedHandlerList) {
             if (handler.isAlive())
-                message += handler.getClient().getUsername() + "\n";
+                message.append(handler.getClient().getUsername()).append("\n");
         }
-        server.updateChatroom(message);
+        server.notifyAwakeAndAliveClients(Game.getProperMessage(message.toString()));
     }
 
     /**
@@ -268,13 +414,22 @@ public class Game {
      * @param countedVotes is the hashmap of counter number of votes
      */
     private void getPoleResult(HashMap<String, Integer> countedVotes) {
+        prepareUsernameHandlerHashmap();
         int max = 0;
         for (var name : countedVotes.keySet()) {
-            if (countedVotes.get(name) > max) {
+            if (name != null && !name.equals("") && countedVotes.get(name) > max) {
                 max = countedVotes.get(name);
                 poleResult = name;
             }
         }
+    }
+
+    /**
+     * this method prepare the handler-username hashmap
+     */
+    private void prepareUsernameHandlerHashmap() {
+        for (var handler : sortedHandlerList)
+            handlersClientUsername.put(handler.getClient().getUsername(), handler);
     }
 
     /**
@@ -284,14 +439,16 @@ public class Game {
         HashMap<String, Integer> countedVotes = new HashMap<>();
         ArrayList<String> votes = (ArrayList<String>) sortedHandlerList.stream()
                 .map(Server.ClientHandler::getVoted).collect(Collectors.toList());
-        for (var vote : votes)
+        for (var vote : votes) {
             if (countedVotes.containsKey(vote))
                 countedVotes.put(vote, countedVotes.get(vote) + 1);
             else
                 countedVotes.put(vote, 1);
-        for (var handler : sortedHandlerList)
+        }
+        for (var handler : sortedHandlerList) {
             if (handler.getVoted().length() == 0)
-                handler.incrementWarnings("You've just got a warning.");
+                handler.incrementWarnings("You've just got a warning.\n");
+        }
         return countedVotes;
     }
 
@@ -306,17 +463,17 @@ public class Game {
                 sortedHandlerList.get(index).getClient().getCharacter().toString();
 
         try {
-            var message = "You are now awake, mafias are as follows...\n";
+            StringBuilder message = new StringBuilder("You are now awake, mafias are as follows...\n");
             int count = 0;
             for (var handler : sortedHandlerList) {
                 if (!handler.getClient().getCharacter().isCitizen())
-                    message += identifier.apply(count);
+                    message.append(identifier.apply(count));
                 count++;
             }
 
             for (var handler : sortedHandlerList){
                 if (!handler.getClient().getCharacter().isCitizen()) {
-                    handler.awake(getProperMessage(message));
+                    handler.awake(getProperMessage(message.toString()));
                     sleep(5000);
                     handler.asleep(getProperMessage("Your now asleep."));
                 }
@@ -329,10 +486,10 @@ public class Game {
                 count++;
             }
 
-            message = getProperMessage("It's time to wakeup, you are the mayor and you should know:\n" + identifier.apply(count));
+            message = new StringBuilder(getProperMessage("It's time to wakeup, you are the mayor and you should know:\n" + identifier.apply(count)));
             for (var handler : sortedHandlerList)
                 if (handler.getClient().getCharacter() == GameCharacter.MAYOR) {
-                    handler.awake(message);
+                    handler.awake(message.toString());
                     sleep(5000);
                     handler.asleep(getProperMessage("Your now asleep."));
                 }
@@ -340,8 +497,8 @@ public class Game {
             for (int i = 1; i < sortedHandlerList.size(); i++) {
                 var character = sortedHandlerList.get(i).getClient().getCharacter();
                 if (character.isCitizen() && character != GameCharacter.MAYOR) {
-                    message = getProperMessage("It's time to wakeup you are the " + roleGetter.apply(i) + ".");
-                    sortedHandlerList.get(i).awake(message);
+                    message = new StringBuilder(getProperMessage("It's time to wakeup you are the " + roleGetter.apply(i) + "."));
+                    sortedHandlerList.get(i).awake(message.toString());
                     sleep(5000);
                     sortedHandlerList.get(i).asleep(getProperMessage("Your now asleep."));
                 }
@@ -379,10 +536,18 @@ public class Game {
      * switch from day to night or visa versa
      */
     public void switchDay() {
-        if (isDay)
-            sortedHandlerList.forEach(handler -> handler.asleep("It's Night and everyone are asleep.\n"));
-        else
-            sortedHandlerList.forEach(handler -> handler.awake("It's Day and everyone are awake.\n"));
+        if (isDay) {
+            sortedHandlerList.forEach(
+                    handler -> handler.asleep("It's Night and everyone are asleep.\n"));
+        } else {
+            sortedHandlerList.forEach(
+                    handler -> handler.awake("It's Day and everyone are awake.\n"));
+            var isRequired = repliesDuringTheNight.get(GameCharacter.DIEHARD);
+            if (isRequired != null &&
+                isRequired.equalsIgnoreCase("yes"))
+                revealDeadCharacters();
+            repliesDuringTheNight.clear();
+        }
         isDay = !isDay;
     }
 
@@ -403,26 +568,48 @@ public class Game {
     }
 
     /**
-     * this method add a player to the list of players
-     * @param player the new player which is going to be added
-     */
-    public void addPlayer(Player player) {
-        players.add(player);
-    }
-
-    /**
      * this methods checks if a game is finished
      * @return true if game is finished
      */
     public boolean isGameFinished() {
+        AtomicInteger numberOfMafias = new AtomicInteger();
+        AtomicInteger numberOfCitizens = new AtomicInteger();
+        sortedHandlerList.forEach((handler) -> {
+            if (handler.getClient().getCharacter().isCitizen())
+                numberOfCitizens.getAndIncrement();
+            else
+                numberOfMafias.getAndIncrement();
+        });
+        if (numberOfMafias.get() >= numberOfCitizens.get()) {
+            showResultOfTheGame(Game.getProperMessage("Mafia Won!"));
+            return true;
+        } else if (!handlerByCharacter.containsKey(GameCharacter.GODFATHER)) {
+            showResultOfTheGame(Game.getProperMessage("Citizens Won! City is Safe Now!!!!"));
+            return true;
+        }
         return false;
     }
 
     /**
      * this method get result of the game
+     * @param properMessage is proper message which will be sent for other clients
      */
-    public void showResultOfTheGame() {
+    public void showResultOfTheGame(String properMessage) {
+        sortedHandlerList.forEach((handler) -> {
+            handler.writeMessage(properMessage);
+        });
+        deadHandlers.forEach((handler) -> {
+            handler.writeMessage(properMessage);
+        });
+    }
 
+    /**
+     * this method map the characters to the handlers
+     */
+    private void mapHandlersToCharacters() {
+        handlerByCharacter = new HashMap<>();
+        for (var handler : sortedHandlerList)
+            handlerByCharacter.put(handler.getClient().getCharacter(), handler);
     }
 
     /**
@@ -459,6 +646,41 @@ public class Game {
      */
     public boolean isDay() {
        return isDay;
+    }
+
+    /**
+     * this method add to dead handlers
+     * @param clientHandler is the handler which will be added to dead handlers
+     */
+    public void addDeadHandlers(Server.ClientHandler clientHandler) {
+        deadHandlers.add(clientHandler);
+    }
+
+    /**
+     * this method remove the client handler from dead handlers
+     * @param clientHandler is the dead handler which will be removed from the list of dead handlers
+     */
+    public void removeDeadHandlers(Server.ClientHandler clientHandler) {
+        deadHandlers.remove(clientHandler);
+    }
+
+    /**
+     * this is a getter
+     * @return dead handlers of the game
+     */
+    public ArrayList<Server.ClientHandler> getDeadHandlers() {
+        return deadHandlers;
+    }
+
+    /**
+     * this method remove a client completely from the database
+     * @param clientHandler is the handler intended to be removed
+     */
+    public void completelyRemove(Server.ClientHandler clientHandler) {
+        sortedHandlerList.remove(clientHandler);
+        deadHandlers.remove(clientHandler);
+        handlerByCharacter.remove(clientHandler.getClient().getCharacter());
+        sortedClientList.remove(clientHandler.getClient());
     }
 }
 //TODO Doctor can't treat him self more than once

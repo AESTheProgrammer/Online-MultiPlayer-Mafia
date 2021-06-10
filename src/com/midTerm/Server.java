@@ -13,6 +13,15 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class Server {
+    // clients of this server
+    // client handlers of this server
+    // sorted client handler list
+    // game is game which currently running on the server
+    // generator creates random number
+    // lock is used for synchronization
+    // executor is used for running a pool of threads
+    // port is the port of the server
+    // saved chat is the chats which are saved during the game(which were public not private)
     private final ArrayList<Client> clients = new ArrayList<>(1);
     private final ArrayList<ClientHandler> clientHandlers = new ArrayList<>(1);
     private ArrayList<ClientHandler> sortedClientHandlerList;
@@ -23,17 +32,25 @@ public class Server {
     private int port;
     private String savedChat = "";
 
+    /**
+     * this is a constructor
+     * @param port is the port number of the server
+     */
     public Server(int port) {
         this.port = port;
         game = new Game(this);
     }
 
+    /**
+     * is the main method which runs the program
+     * @param args are arbitrarily strings which might be give to main
+     */
     public static void main(String[] args) {
         Server server = new Server(7660);
         try (ServerSocket welcomingSocket = new ServerSocket(server.port)) {
             System.out.println("Server Started");
             int count = 0;
-            while ((count < 3 || !server.isAllClientsReady()) && count < 4) {
+            while ((count < 3 || !server.isAllClientsReady()) && count < 10) {
                 Socket connectionSocket = welcomingSocket.accept();
                 count++;
                 Client client = new Client();
@@ -42,6 +59,7 @@ public class Server {
                 server.clients.add(client);
                 server.clientHandlers.add(clientHandler);
                 server.executor.execute(clientHandler);
+                Thread.sleep(5000);
             }
             server.handoutCharacters();
             server.game.sortHandlersAndClients(server.clientHandlers);
@@ -69,7 +87,6 @@ public class Server {
         for (var handler : clientHandlers) {
             var randomRole = game.getCharacterInstance();
             handler.getClient().setCharacter(randomRole);
-            handler.writeMessage(Game.getProperMessage("<character> " + randomRole.toString()));
         }
     }
 
@@ -84,7 +101,18 @@ public class Server {
         } finally {
             lock.unlock();
         }
-        notifyAllClients(newMessage + "\n");
+        notifyAwakeAndAliveClients(newMessage + "\n");
+        notifySpecters(newMessage + "\n");
+    }
+
+    /**
+     * this method notify specters from new messages
+     * @param newMessage is the new message which will be sent to the specter
+     */
+    private void notifySpecters(String newMessage) {
+        for (var handler : game.getDeadHandlers()) {
+            handler.writeMessage(newMessage + "\n");
+        }
     }
 
     /**
@@ -104,14 +132,25 @@ public class Server {
         return savedChat;
     }
 
+    /**
+     * checks if the given username is valid or not
+     * @param username is the username of the which is given to be checked
+     * @return true if it satisfies criterion else false
+     */
     private boolean isValidUsername(String username) {
         return username.length() != 0 &&
-        clientHandlers.stream().noneMatch((handler) -> handler.getClient().getUsername().equalsIgnoreCase(username));
+        clientHandlers.stream().noneMatch((handler) ->
+        handler.getClient().getUsername().equalsIgnoreCase(username));
     }
 
-    public void notifyAwakeClients(String newMessage) {
+    /**
+     * this method notify awake clients.
+     * @param newMessage is the new message which will
+     * be sent to the players chat and will be saved there
+     */
+    public void notifyAwakeAndAliveClients(String newMessage) {
         for (var handler : clientHandlers)
-            if (handler.isAwake)
+            if (handler.isAwake && handler.isAlive)
                 handler.writeMessage(newMessage + "\n");
     }
 
@@ -128,6 +167,7 @@ public class Server {
         private ObjectOutputStream objectOutputStream;
         private BufferedReader reader;
         private boolean isReady;
+        private boolean isMuted;
         private boolean isAwake;
         private boolean isConfirmation;
         private boolean isVoting;
@@ -137,6 +177,7 @@ public class Server {
         private String savedChat = "";
         private String voted;
         private final Scanner scanner = new Scanner(System.in);
+        private ArrayList<Server.ClientHandler> listOfHandlersForVoting;
 
         /**
          * this is a constructor
@@ -154,6 +195,7 @@ public class Server {
             this.client = client;
             this.connectionSocket = connectionSocket;
             voted = "";
+            warnings = 0;
             isReady = false;
             isVoting = false;
             isConfirmation = false;
@@ -174,9 +216,11 @@ public class Server {
                 getUsername();
                 reportClientConnection();
                 startMessageListener();
-            } catch (IOException | InterruptedException e) {
-                e.printStackTrace();
-            }
+                while (isClientConnected)
+                    Thread.sleep(1000);
+                isAlive = false;
+                game.completelyRemove(this);
+            } catch (IOException | InterruptedException e) {}
         }
 
         /**
@@ -214,8 +258,7 @@ public class Server {
         public void writeMessage(String properMessage) {
             try {
                 outputStream.write(properMessage.getBytes());
-            } catch(IOException e) {
-                e.printStackTrace();
+            } catch(IOException ignored) {
             }
         }
 
@@ -225,40 +268,49 @@ public class Server {
         private void readMessage() {
             String line;
             try {
-                while ((line = reader.readLine()) != null) {
-                    if (warnings >= 3 || line.trim().strip().equalsIgnoreCase("exit")) {
-                        reportClientDisconnection();
-                        server.updateChatroom(client.getUsername() + " has been disconnected.");
-                        return;
-                    } else if (isAwake && isAlive) {
-                        if (!isVoting && !isConfirmation) {
+                while (warnings < 3 && isClientConnected &&
+                        (line = reader.readLine()) != null &&
+                        !line.trim().strip().equalsIgnoreCase("exit")) {
+                    if (isAwake) {
+                        if (!isVoting && !isConfirmation && isAlive && !isMuted) {
                             if (line.trim().strip().equalsIgnoreCase("ready"))
                                 isReady = true;
                             savedChat += client.getUsername() + ": " + line;
                             server.updateChatroom(client.getUsername() + ": " + line);
                         } else if (isConfirmation && !isVoting) {
                             voted = "";
-                            if (line.equalsIgnoreCase("yes")) {
-                                isConfirmation = false;
-                                server.updateChatroom(Game.getProperMessage("Mayor confirmed the execution."));
-                                voted = "no";
-                            } else if (line.equalsIgnoreCase("NO")) {
-                                isConfirmation = false;
+                            line = line.strip().trim();
+                            if (isAlive && line.equalsIgnoreCase("yes")) {
                                 voted = "yes";
-                                server.updateChatroom(Game.getProperMessage("Mayor denied the execution."));
+                                if (client.getCharacter() == GameCharacter.DIEHARD)
+                                    client.getCharacter().decreaseConstraint();
+                            } else if (isAlive && line.equalsIgnoreCase("NO")) {
+                                voted = "no";
                             }
-                        } else if (isVoting && !isConfirmation) {
-                            for (var client : game.getSortedClientList()) {
-                                voted = line.trim().strip();
-                                if (client.getUsername().equalsIgnoreCase(voted) &&
-                                   !voted.equalsIgnoreCase(client.getUsername())){
-                                    if (game.isDay()) {
+                            if (!isAlive && line.equalsIgnoreCase("no")) {
+                                reportClientDisconnection();
+                                game.completelyRemove(this);
+                                return;
+                            } else if (!isAlive && line.equalsIgnoreCase("yes")) {
+                            }
+                        } else if (isVoting && !isConfirmation && isAlive) {
+                            for (var handler : listOfHandlersForVoting) {
+                                var str = line.trim().strip();
+                                if (handler.getClient().getUsername().equalsIgnoreCase(str)) {
+                                    if (!str.equalsIgnoreCase(client.getUsername())) {
+                                        voted = line.trim().strip();
                                         server.updateChatroom(Game.getProperMessage(
                                                 this.client.getUsername() + " voted " + voted));
                                         break;
-                                    } else {
-                                        server.notifyAwakeClients(Game.getProperMessage(
-                                                this.client.getUsername() + " cured " + voted));
+                                    } else if (client.getCharacter().getConstraint() == 1 && (
+                                               client.getCharacter() == GameCharacter.DOCTORLECTOR ||
+                                               client.getCharacter() == GameCharacter.DOCTOR)) {
+                                        voted = line.trim().strip();
+                                        if (game.isDay()) {
+                                            server.updateChatroom(Game.getProperMessage(
+                                                    this.client.getUsername() + " voted " + voted));
+                                        }
+                                        client.getCharacter().decreaseConstraint();
                                         break;
                                     }
                                 }
@@ -268,7 +320,9 @@ public class Server {
                         }
                     }
                 }
-            } catch (IOException e) {
+                reportClientDisconnection();
+                server.updateChatroom(client.getUsername() + " has been disconnected.");
+                } catch (IOException e) {
                 e.printStackTrace();
             }
         }
@@ -317,8 +371,17 @@ public class Server {
          * @param message is the message which will be sent to the client.
          */
         public void awake(String message) {
+            if (isAlive) {
+                isAwake = true;
+                writeMessage(message);
+            }
+        }
+
+        /**
+         * this method awake the client
+         */
+        public void awake() {
             isAwake = true;
-            writeMessage(message);
         }
 
         /**
@@ -326,6 +389,8 @@ public class Server {
          * @param message is the message which will be sent to the client
          */
         public void asleep(String message) {
+            isConfirmation = false;
+            isVoting = false;
             isAwake = false;
             writeMessage(message);
         }
@@ -333,11 +398,14 @@ public class Server {
         /**
          * this method get a vote from client
          */
-        public void getVote(String message) {
-            isVoting = true;
-            isAwake = true;
-            voted = "";
-            writeMessage(message);
+        public void getVote(ArrayList<ClientHandler> listForVotingFrom, String message) {
+            if (isAlive) {
+                listOfHandlersForVoting = listForVotingFrom;
+                isVoting = true;
+                isAwake = true;
+                voted = "";
+                writeMessage(message);
+            }
         }
 
         /**
@@ -351,10 +419,10 @@ public class Server {
         /**
          * this method get an acceptation from the mayor if the voted person could be executed
          */
-        public void getConfirmation(String poleResult) {
+        public void getConfirmation(String question) {
             isConfirmation = true;
             isAwake = true;
-            writeMessage(Game.getProperMessage(poleResult + " was voted do You confirm the execution?(Yes/No)"));
+            writeMessage(question);
         }
 
         /**
@@ -388,7 +456,6 @@ public class Server {
             client.getCharacter().decreaseLive();
             if (client.getCharacter().getLives() == 0) {
                 isAlive = false;
-                game.updateDeadCharacters(client.getCharacter());
             }
         }
 
@@ -396,7 +463,10 @@ public class Server {
          * this method cure the player
          */
         public void cure() {
-            isAlive = true;
+            if (client.getCharacter().getLives() == 0) {
+                isAlive = true;
+                client.getCharacter().increaseLives();
+            }
         }
 
         /**
@@ -413,6 +483,27 @@ public class Server {
          */
         public boolean isAlive() {
             return isAlive;
+        }
+
+        /**
+         * this method mutes the client
+         */
+        public void mute() {
+            isMuted = true;
+        }
+
+        /**
+         * this method unmute the client
+         */
+        public void unmute() {
+            isMuted = false;
+        }
+
+        /**
+         * set voted empty
+         */
+        public void setEmptyVoted() {
+            voted = "";
         }
     }
 }
