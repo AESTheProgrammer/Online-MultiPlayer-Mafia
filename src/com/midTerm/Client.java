@@ -2,9 +2,10 @@ package com.midTerm;
 
 import java.io.*;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 
-public class Client {
+public class Client implements Serializable {
     // scanner is used to get input from the user
     // reader is used for reading information from input
     // out is used to write and send messages for server
@@ -12,12 +13,12 @@ public class Client {
     // is the username of this client until end of the game
     // is a predicate for being logged in or out
     // is the character of this client
-    private final Scanner scanner = new Scanner(System.in);
-    private BufferedReader reader;
-    private OutputStream out;
-    private String savedChat = "";
-    private String username = "";
-    private boolean isLogin;
+    private static transient final Scanner scanner = new Scanner(System.in);
+    private transient BufferedReader reader;
+    private transient OutputStream out;
+    private transient String savedChat = "";
+    private transient String username = "";
+    private transient boolean isLogin;
     public GameCharacter character;
 
     /**
@@ -32,6 +33,7 @@ public class Client {
      * @param args is an arbitrarily array of strings
      */
     public static void main(String[] args) {
+        //int port = scanner.nextInt();
         Client client = new Client();
         try (Socket connectionSocket = new Socket("127.0.0.1", 7660)){
             client.login();
@@ -89,6 +91,8 @@ public class Client {
             out.write((username +"\n").getBytes());
             while (!inputString.trim().strip().equalsIgnoreCase("exit")) {
                 inputString = scanner.nextLine();
+                if (inputString.equals("HISTORY"))
+                    printChatHistory();
                 if (inputString.trim().strip().length() > 0)
                     out.write((inputString + "\n").getBytes());
             }
@@ -99,39 +103,38 @@ public class Client {
     }
 
     /**
+     * this method prints the chat history
+     */
+    private void printChatHistory() {
+        System.out.println( ConsoleColors.BLACK_BACKGROUND +
+                            ConsoleColors.GREEN_BOLD +
+                            savedChat + ConsoleColors.RESET);
+    }
+
+    /**
      * this method read the messages from the input and print it on the window
      */
     private void readAndPrintMessage() {
         String line;
         try {
-            reader.read();
-            reader.read();
-            reader.read();
-            reader.read();
             while ((line = reader.readLine()) != null && isLogin) {
-                // cls();
-//                System.out.println(savedChat + line);
                 if (line.contains("<character>") && character == null) {
                     character = GameCharacter.getCharacterByName(line.substring(line.indexOf(">") + 2));
                 } else if (line.length() != 0) {
-                    System.out.println(line);
-                    savedChat += line + "\n";
+                    if (line.contains("TIME LEFT") && line.contains("CHARACTER")  && line.contains("STATE")  ) {
+                        System.out.print(line + "\r");
+                    } else {
+                        System.out.println(ConsoleColors.BLACK_BACKGROUND +
+                                           ConsoleColors.GREEN_BOLD +
+                                           line + "                                                                                                                               " +
+                                           ConsoleColors.RESET);
+                        savedChat += line + "                                                                                                            \n";
+                    }
                 }
                 if (!isLogin)
                     break;
             }
         } catch (IOException ignored) {}
-    }
-
-    /**
-     * this method cleans the terminal
-     */
-    public static void cls() {
-        try {
-            new ProcessBuilder("cmd", "/c", "cls").inheritIO().start().waitFor();
-        } catch (InterruptedException | IOException e) {
-            e.printStackTrace();
-        }
     }
 
     /**
