@@ -126,29 +126,28 @@ public class Game {
         awakeDoctorsForTreatment();
         var handler = handlerByCharacter.get(GameCharacter.DETECTOR);
         if (handler != null) {
-            refresh();
+            handler.setEmptyVoted();
             handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be inquired?"));
             sendListOfAllALivePlayers();
-            startTimer(20);
+            startTimer(60);
             showTheResultOfQuery(handler);
-            handler.mute();
             handler.silent();
         }
         handler = handlerByCharacter.get(GameCharacter.PROFESSIONAL);
         if (handler != null) {
-            refresh();
+            handler.setEmptyVoted();
             handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Killed?"));
             sendListOfAllALivePlayers();
-            startTimer(20);
+            startTimer(60);
             handler.silent();
             handler.asleep(getProperMessage("You are now asleep."));
         }
         handler = handlerByCharacter.get(GameCharacter.MENTALIST);
         if (handler != null) {
-            refresh();
+            handler.setEmptyVoted();
             handler.getVote(sortedHandlerList, Game.getProperMessage("Who to be muted?"));
             sendListOfAllALivePlayers();
-            startTimer(20);
+            startTimer(60);
             handler.asleep(getProperMessage("You are now asleep."));
             handler.silent();
         }
@@ -156,7 +155,7 @@ public class Game {
         if (handler != null &&
             handler.getClient().getCharacter().getConstraint() != 0) {
             handler.getConfirmation(Game.getProperMessage("Do you want me to reveal dead characters?(yes/no)"));
-            startTimer(20);
+            startTimer(60);
             handler.asleep(getProperMessage("You are now asleep."));
             handler.silent();
         }
@@ -182,7 +181,6 @@ public class Game {
      * this method awakes the doctors so they cure someone
      */
     private void awakeDoctorsForTreatment() {
-        refresh();
         ArrayList<Server.ClientHandler> mafiasList = new ArrayList<>();
         sortedHandlerList.forEach((handler) -> {
             if (!handler.getClient().getCharacter().isCitizen())
@@ -191,18 +189,20 @@ public class Game {
         var goodDoctor = handlerByCharacter.get(GameCharacter.DOCTOR);
         var badDoctor = handlerByCharacter.get(GameCharacter.DOCTORLECTOR);
         if (goodDoctor != null && goodDoctor.isAlive()) {
+            goodDoctor.setEmptyVoted();
             goodDoctor.awake("Wakeup it's time to Cure someone.");
             goodDoctor.getVote(sortedHandlerList, getProperMessage("Who To Be Cured?"));
             sendListOfAllALivePlayers();
-            startTimer(20);
+            startTimer(60);
             goodDoctor.asleep(getProperMessage("You are now asleep."));
             goodDoctor.silent();
         }
         if (badDoctor != null && badDoctor.isAlive()) {
+            badDoctor.setEmptyVoted();
             badDoctor.awake("Wakeup it's time to Cure One Of Your mates.");
             badDoctor.getVote(mafiasList, getProperMessage("Who To Be Cured?"));
             sendListOfAllALiveMafias(mafiasList);
-            startTimer(20);
+            startTimer(60);
             badDoctor.asleep(getProperMessage("You are now asleep."));
             badDoctor.silent();
         }
@@ -225,19 +225,19 @@ public class Game {
      * this method awakes the mafias so they can execute someone
      */
     private void awakeMafiasForExecution() {
-        refresh();
         ArrayList<Server.ClientHandler> mafias = new ArrayList<>(Arrays.asList(
                 handlerByCharacter.get(GameCharacter.MAFIA),
                 handlerByCharacter.get(GameCharacter.DOCTORLECTOR),
                 handlerByCharacter.get(GameCharacter.GODFATHER)));
         for (var handler : mafias) {
             if (handler != null) {
+                handler.setEmptyVoted();
                 handler.awake(Game.getProperMessage("Wakeup it's time to Execute someone."));
                 handler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Executed?"));
             }
         }
         sendListOfAllALiveCitizens();
-        startTimer(30);
+        startTimer(60);
         for (var handler : mafias) {
             if (handler != null) {
                 handler.asleep(Game.getProperMessage("You are now asleep."));
@@ -334,7 +334,7 @@ public class Game {
      * this method control the daytime progress
      */
     private void startDayProgress() {
-        startTimer(300);
+        startTimer(60);
         makePole();
     }
 
@@ -345,7 +345,7 @@ public class Game {
         sendListOfAllALivePlayers();
         for (var clientHandler : sortedHandlerList)
             clientHandler.getVote(sortedHandlerList, Game.getProperMessage("Who To Be Executed?"));
-        startTimer(30);
+        startTimer(80);
         getPoleResult(countTheVotes());
         announcePoleResult();
         sortedHandlerList.forEach(Server.ClientHandler::silent);
@@ -366,13 +366,15 @@ public class Game {
             }
         }
         var targetedHandler = handlersClientUsername.get(poleResult);
-        targetedHandler.kill();
-        targetedHandler.kill();
-        indicateDeadPlayers();
-        for (var handler : sortedHandlerList)
-            handler.reportPoleResult(getProperMessage(
-         targetedHandler.getClient().getUsername() +
-            " was executed."));
+        if (targetedHandler != null) {
+            targetedHandler.kill();
+            targetedHandler.kill();
+            indicateDeadPlayers();
+            for (var handler : sortedHandlerList)
+                handler.reportPoleResult(getProperMessage(
+              targetedHandler.getClient().getUsername() +
+                " was executed."));
+        }
     }
 
     /**
@@ -482,7 +484,7 @@ public class Game {
         }
         for (var handler : sortedHandlerList) {
             if (handler.getVoted().length() == 0)
-                handler.incrementWarnings("You've just got a warning.\n");
+                handler.incrementWarnings(getProperMessage("You've just got a warning."));
         }
         return countedVotes;
     }
@@ -570,7 +572,6 @@ public class Game {
         }
     }
 
-
     /**
      * @return true if all clients are ready
      */
@@ -584,10 +585,10 @@ public class Game {
     public void switchDay() {
         if (isDay) {
             sortedHandlerList.forEach(
-                    handler -> handler.asleep("It's Night and everyone are asleep.\n"));
+                    handler -> handler.asleep(getProperMessage("It's Night and everyone are asleep.")));
         } else {
             sortedHandlerList.forEach(
-                    handler -> handler.awake("It's Day and everyone are awake.\n"));
+                    handler -> handler.awake(getProperMessage("It's Day and everyone are awake.")));
             var isRequired = repliesDuringTheNight.get(GameCharacter.DIEHARD);
             if (isRequired != null &&
                 isRequired.trim().strip().equalsIgnoreCase("yes"))

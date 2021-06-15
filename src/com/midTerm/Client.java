@@ -2,7 +2,6 @@ package com.midTerm;
 
 import java.io.*;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.util.Scanner;
 
 public class Client implements Serializable {

@@ -180,7 +180,7 @@ public class Server implements Serializable{
     }
 
     /**
-     * this method tries to save the game
+     * this method tries to load the game
      * @return true if it was successful else false
      */
     private boolean load(String ID) {
@@ -358,13 +358,16 @@ public class Server implements Serializable{
                         (line = reader.readLine()) != null &&
                         !line.trim().strip().equalsIgnoreCase("exit")) {
                     if (isAwake) {
-                        if (!isVoting && !isConfirmation && isAlive && !isMuted) {
-                            if (line.trim().strip().equalsIgnoreCase("ready"))
+                        if (!isVoting && !isConfirmation && isAlive) {
+                            if (line.trim().strip().equalsIgnoreCase("ready")) {
                                 isReady = true;
-                            if (line.trim().strip().equals("SAVE")) {
-                                writeMessage(Game.getProperMessage("You can Load the game Later Using this ID: " + server.save()));
-                            }
                             server.updateChatroom(client.getUsername() + ": " + line);
+                            }else if (line.trim().strip().equals("SAVE")) {
+                                writeMessage(Game.getProperMessage("You can Load the game Later Using this ID: " + server.save()));
+                                server.updateChatroom(client.getUsername() + ": " + line);
+                            } else if (!isMuted) {
+                                server.updateChatroom(client.getUsername() + ": " + line);
+                            }
                         } else if (isConfirmation && !isVoting) {
                             voted = "";
                             line = line.strip().trim();
@@ -397,7 +400,6 @@ public class Server implements Serializable{
                                     } else if (client.getCharacter().getConstraint() == 1 && !game.isDay() && (
                                                client.getCharacter() == GameCharacter.DOCTORLECTOR ||
                                                client.getCharacter() == GameCharacter.DOCTOR)) {
-
                                         voted = line.trim().strip();
                                         server.updateChatroom(Game.getProperMessage(
                                                 this.client.getUsername() + " cured " + voted));
